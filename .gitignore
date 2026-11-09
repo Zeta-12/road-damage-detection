@@ -1,0 +1,22 @@
+# Environments
+.venv/
+__pycache__/
+*.py[cod]
+
+# Data, runs, weights, exported models
+datasets/
+runs/
+*.zip
+*.pt
+*.pth
+*.onnx
+*.engine
+*_openvino_model/
+
+# Tooling
+.pytest_cache/
+.ruff_cache/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

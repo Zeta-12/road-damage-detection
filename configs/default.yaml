@@ -1,0 +1,19 @@
+# All keys are optional, the defaults are in src/road_damage/config.py
+data:
+  root: datasets/RDD2022        # folder that contains Japan/, India/, Norway/, ...
+  countries: [Japan, India, Norway, United_States, Czech, China_MotorBike, China_Drone]
+  classes: [D00, D10, D20, D40] # longitudinal crack, transverse crack, alligator crack, pothole
+  split: [0.7, 0.1, 0.2]        # train / val / test, taken from the labelled train folders
+  block_size: 1                 # > 1 keeps consecutive images in the same split. 1 = random per image, enough
+                                # here: consecutive RDD2022 images are no more alike than random pairs
+  seed: 42
+
+train:
+  model: yolo26s.pt             # any Ultralytics weights: yolo11s.pt, yolo26m.pt, rtdetr-l.pt, ...
+  epochs: 100
+  imgsz: 640
+  batch: 16
+  workers: 4
+  device: null                  # null = Ultralytics default (first GPU if there is one)
+
+output_dir: runs

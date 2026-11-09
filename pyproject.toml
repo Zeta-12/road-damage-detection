@@ -1,0 +1,51 @@
+[project]
+name = "road-damage-detection"
+version = "0.1.0"
+description = "Road damage detection on RDD2022 (YOLO vs RT-DETR), per-country evaluation and edge deployment."
+readme = "README.md"
+license = "AGPL-3.0-only"
+authors = [{ name = "Julien Beloin" }]
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "ultralytics==8.4.203",
+    "torch>=2.6",
+    "torchvision>=0.21",
+    "numpy>=2.0",
+    "pillow>=10.0",
+    "pyyaml>=6.0",
+    "tqdm>=4.66",
+]
+
+[project.scripts]
+rdd = "road_damage.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/road_damage"]
+
+# CPU wheels by default (for CUDA, see the README)
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+torchvision = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
