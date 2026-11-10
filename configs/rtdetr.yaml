@@ -1,7 +1,7 @@
 # RT-DETR-L on all countries: rdd train --config configs/rtdetr.yaml
 train:
   model: rtdetr-l.pt
-  epochs: 40
+  epochs: 40                    # best val epoch was 18 on all countries
   batch: 8                      # already 7.4 GB on an 8 GB GPU
   extra:
     # usual RT-DETR recipe. With optimizer=auto Ultralytics picks MuSGD at lr 0.01 here (more than 10k

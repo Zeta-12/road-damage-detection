@@ -6,7 +6,17 @@ Detection of cracks and potholes in images taken from vehicles, on the RDD2022 d
 States, Czech Republic, China). I compare a CNN detector (YOLO) with a transformer detector (RT-DETR), measure how a
 model trained in some countries works in the others, and deploy the best one on an edge device (OpenVINO, INT8, C++).
 
-Status: first results with YOLO26s on all countries (below), RT-DETR-L training.
+In short:
+
+- YOLO26s and RT-DETR-L get the same test mAP50 (0.600 and 0.601). RT-DETR-L needs 5x the compute and is only
+  clearly better in Norway.
+- The score goes from 0.29 to 0.93 depending on the subset. The 0.93 of China_MotorBike is inflated by
+  near-duplicates between train and test (the same damage photographed several times), found with a nearest
+  neighbour search on image embeddings.
+- Norway is limited by the input size: +7 points of mAP50 by running YOLO26s at 1280 px instead of 640.
+
+Status: YOLO26s and RT-DETR-L trained on all countries, results below. Next: a split without near-duplicates, then
+OpenVINO.
 
 ## Dataset
 
@@ -49,8 +59,8 @@ possible, they are measured in [Results](#results).
 ### YOLO26s on all countries
 
 YOLO26s fine-tuned from the COCO weights on the 7 subsets together: 640 px, batch 16, 100 epochs, 8.2 h on an
-RTX 3060 Ti (8 GB). With `optimizer=auto` Ultralytics picks MuSGD at lr 0.01. `best.pt` is epoch 70 (best val
-fitness, mAP50 0.607 and mAP50-95 0.314 on val).
+RTX 3060 Ti (8 GB). With `optimizer=auto` Ultralytics picks MuSGD at lr 0.01. `best.pt` is epoch 67, the best val
+mAP50-95 (0.314, mAP50 0.606).
 
 Test split (`rdd evaluate`):
 
@@ -118,13 +128,53 @@ Test split (`rdd evaluate`):
    of a class are predicted as another class (D20 as D00). The errors are missed damage and detections on intact road,
    half of these false detections are D00.
 
+### RT-DETR-L vs YOLO26s
+
+RT-DETR-L fine-tuned from the COCO weights on the same data, with the usual RT-DETR recipe (`configs/rtdetr.yaml`):
+AdamW, lr 1e-4, batch 8 (16 does not fit in 8 GB), 40 epochs, 13.1 h. Ultralytics accumulates the gradients up to
+64 images per step for both models. `best.pt` is epoch 18, the best val mAP50-95 (0.298, mAP50 0.613).
+
+| | YOLO26s | RT-DETR-L |
+|---|---|---|
+| Parameters | 9.5 M | 32.0 M |
+| GFLOPs at 640 px | 20.8 | 105.3 |
+| GPU inference per image (Ultralytics val, FP16, batch 16 / 8) | 4.0 ms | 16.2 ms |
+| Training | 8.2 h, best epoch 67 | 13.1 h, best epoch 18 |
+| Test mAP50 | 0.600 | 0.601 |
+| Test mAP50-95 | 0.311 | 0.293 |
+
+Test mAP50 per subset:
+
+| Test set | YOLO26s | RT-DETR-L | Difference |
+|---|---|---|---|
+| all | 0.600 | 0.601 | +0.000 |
+| Japan | 0.579 | 0.578 | -0.002 |
+| India | 0.401 | 0.367 | -0.033 |
+| Norway | 0.291 | 0.388 | +0.097 |
+| United_States | 0.653 | 0.623 | -0.031 |
+| Czech | 0.410 | 0.362 | -0.047 |
+| China_MotorBike | 0.927 | 0.906 | -0.021 |
+| China_Drone | 0.701 | 0.641 | -0.060 |
+
+1. **Same mAP50 overall for 5x the compute.** The RT-DETR-L boxes are less tight (mAP50-95 0.293 vs 0.311) and it is
+   lower in every subset except Japan (same) and Norway. For the edge part, the model to deploy is YOLO26s.
+
+2. **Norway is the exception: 0.388 vs 0.291.** RT-DETR-L is better on the 4 classes there (D10 0.402 vs 0.259),
+   with a recall of 0.405 vs 0.299, and it beats YOLO26s run at 1280 px (0.364). I haven't checked why yet. At 640 px
+   the Norway cracks are long and less than a pixel wide; my guess is that the self-attention of the RT-DETR encoder,
+   which sees the whole image at stride 32, helps to follow them. To test: RT-DETR-L at 1280 px on Norway.
+
+3. **It learns faster and overfits sooner.** Val mAP50 at epoch 5: 0.539 (YOLO26s: 0.330). It peaks at 0.616 at
+   epoch 24, ends at 0.603 at epoch 40, and the val GIoU loss goes up from epoch 15. 20 epochs (6.6 h) would have
+   been enough.
+
 ## Plan
 
 - [x] YOLO26s on all countries, mAP per country
-- [ ] RT-DETR-L on all countries (training, `configs/rtdetr.yaml`: 40 epochs, AdamW lr 1e-4)
+- [x] RT-DETR-L on all countries
 - [x] Near-duplicates between train and test
 - [ ] Split by groups of near-duplicates and retrain, for a test set without leaks
-- [ ] Norway at 1280 px (training at that size, or tiles)
+- [ ] Norway at 1280 px (training at that size, or tiles), RT-DETR-L included
 - [ ] Cross-country: train on one subset, test on the others
 - [ ] OpenVINO FP16 / INT8 (post-training quantization, then quantization-aware training if needed), latency and mAP
   on CPU / iGPU / NPU
