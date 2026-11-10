@@ -52,7 +52,20 @@ def main(argv: list[str] | None = None) -> None:
     p_eval.add_argument("--weights", required=True, help="best.pt of a run.")
     p_eval.add_argument("--split", default="test", choices=["val", "test"])
     p_eval.add_argument("--batch", type=int)
+    p_eval.add_argument("--imgsz", type=int, help="Inference size (default: the training size of the config).")
+    p_eval.add_argument("--workers", type=int)
     p_eval.add_argument("--device")
+    p_eval.add_argument(
+        "--similarity",
+        nargs=2,
+        type=float,
+        metavar=("LO", "HI"),
+        help="Only the images whose nearest train image has a similarity in [LO, HI) (after rdd duplicates).",
+    )
+    p_dup = sub.add_parser("duplicates", parents=[common], help="Nearest train image of every val / test image.")
+    p_dup.add_argument("--batch", type=int, default=64)
+    p_dup.add_argument("--workers", type=int, default=4)
+    p_dup.add_argument("--device", help="0, cpu, ... (default: first GPU if there is one).")
 
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S")
@@ -84,7 +97,13 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "evaluate":
         from road_damage.train import evaluate, markdown_table
 
-        print(markdown_table(evaluate(cfg, args.weights, args.split), cfg["data"]["classes"]))
+        similarity = tuple(args.similarity) if args.similarity else None
+        print(markdown_table(evaluate(cfg, args.weights, args.split, similarity), cfg["data"]["classes"]))
+    elif args.command == "duplicates":
+        from road_damage.duplicates import duplicates_table, find_duplicates
+
+        result = find_duplicates(cfg, batch=args.batch, workers=args.workers, device=args.device)
+        print(duplicates_table(result))
 
 
 if __name__ == "__main__":

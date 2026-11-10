@@ -1,0 +1,11 @@
+# RT-DETR-L on all countries: rdd train --config configs/rtdetr.yaml
+train:
+  model: rtdetr-l.pt
+  epochs: 40
+  batch: 8                      # already 7.4 GB on an 8 GB GPU
+  extra:
+    # usual RT-DETR recipe. With optimizer=auto Ultralytics picks MuSGD at lr 0.01 here (more than 10k
+    # iterations), tuned for the YOLO CNNs
+    optimizer: AdamW
+    lr0: 0.0001
+    warmup_bias_lr: 0.0         # auto sets it to 0, a fixed optimizer keeps the 0.1 default

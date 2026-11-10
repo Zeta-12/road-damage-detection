@@ -24,6 +24,7 @@ DEFAULTS: dict[str, Any] = {
         "batch": 16,
         "workers": 4,
         "device": None,
+        "extra": {},
     },
     "output_dir": "runs",
 }

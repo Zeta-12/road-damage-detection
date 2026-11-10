@@ -54,3 +54,23 @@ def rdd_cfg(rdd_root: Path, tmp_path: Path) -> dict:
             "output_dir": str(tmp_path / "runs"),
         },
     )
+
+
+def grey_level_embed(paths, **kwargs) -> np.ndarray:
+    # one-hot of the grey level read back from the pixels: images with the same level are exact copies
+    e = np.zeros((len(paths), 10), dtype=np.float32)
+    for i, p in enumerate(paths):
+        with Image.open(p) as im:
+            e[i, round((im.getpixel((0, 0))[0] - 30) / 20)] = 1
+    return e
+
+
+@pytest.fixture
+def prepared_cfg(rdd_cfg: dict, monkeypatch) -> dict:
+    """rdd_cfg after `rdd prepare` and `rdd duplicates` (with grey_level_embed instead of a CNN)."""
+    from road_damage import data, duplicates
+
+    data.prepare(rdd_cfg)
+    monkeypatch.setattr(duplicates, "embed", grey_level_embed)
+    duplicates.find_duplicates(rdd_cfg)
+    return rdd_cfg

@@ -2,7 +2,7 @@ import pytest
 
 from road_damage.cli import main
 
-COMMANDS = ["download", "prepare", "stats", "train", "evaluate"]
+COMMANDS = ["download", "prepare", "stats", "train", "evaluate", "duplicates"]
 
 
 @pytest.mark.parametrize("command", COMMANDS)

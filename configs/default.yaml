@@ -15,5 +15,6 @@ train:
   batch: 16
   workers: 4
   device: null                  # null = Ultralytics default (first GPU if there is one)
+  extra: {}                     # passed as is to Ultralytics model.train(): optimizer, lr0, mosaic, ...
 
 output_dir: runs
