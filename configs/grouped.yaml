@@ -1,0 +1,10 @@
+# Split by groups of near-duplicates. rdd group-split --config configs/grouped.yaml writes it, then the same
+# --config for train / evaluate / duplicates
+data:
+  split_dir: yolo_groups
+  group_threshold: 0.96         # from the pairs: most of them are the same place from 0.96 up
+  # copies go down to 0.87 there, and at 0.90 one group holds 79 % of its images: no clean split possible
+  train_only: [China_MotorBike]
+
+train:
+  epochs: 70                    # best val epoch was 67 on the random split

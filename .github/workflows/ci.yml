@@ -14,7 +14,7 @@ jobs:
         with:
           enable-cache: true
       - name: Install (CPU wheels)
-        run: uv sync --locked --group dev --python 3.12
+        run: uv sync --locked --group dev --extra openvino --python 3.12
       - name: Lint
         run: |
           uv run ruff check src tests

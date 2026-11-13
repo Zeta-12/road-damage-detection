@@ -7,6 +7,9 @@ data:
   block_size: 1                 # > 1 keeps consecutive images in the same split. 1 = random per image, enough
                                 # here: consecutive RDD2022 images are no more alike than random pairs
   seed: 42
+  split_dir: yolo               # split used by train / evaluate / duplicates. yolo = the random split of rdd prepare
+  group_threshold: 0.96         # rdd group-split: images at least this similar stay in the same split
+  train_only: []                # rdd group-split: countries that only go to train
 
 train:
   model: yolo26s.pt             # any Ultralytics weights: yolo11s.pt, yolo26m.pt, rtdetr-l.pt, ...

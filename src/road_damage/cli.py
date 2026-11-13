@@ -16,6 +16,8 @@ def _overrides(args: argparse.Namespace) -> dict:
         data["root"] = args.data_root
     if getattr(args, "countries", None):
         data["countries"] = args.countries
+    if getattr(args, "split_dir", None):
+        data["split_dir"] = args.split_dir
     for key in ("model", "epochs", "batch", "imgsz", "device", "workers"):
         if getattr(args, key, None) is not None:
             train[key] = getattr(args, key)
@@ -34,6 +36,7 @@ def main(argv: list[str] | None = None) -> None:
     common.add_argument("--data-root", help="Folder containing the RDD2022 country folders.")
     common.add_argument("--countries", nargs="+", help="Subset of countries (default: all 7).")
     common.add_argument("--output-dir", help="Where runs are written (default: runs/).")
+    common.add_argument("--split-dir", help="Split folder under the data root (default: yolo, from rdd prepare).")
 
     sub.add_parser("download", parents=[common], help="Download and extract RDD2022 (13.3 GB, CC BY 4.0).")
     sub.add_parser("prepare", parents=[common], help="YOLO labels, train / val / test split, dataset files.")
@@ -62,10 +65,30 @@ def main(argv: list[str] | None = None) -> None:
         metavar=("LO", "HI"),
         help="Only the images whose nearest train image has a similarity in [LO, HI) (after rdd duplicates).",
     )
+    p_eval.add_argument("--tag", help="Suffix of the result files, e.g. int8_npu.")
+    p_eval.add_argument(
+        "--square",
+        action="store_true",
+        help="imgsz x imgsz inputs without the rectangular batches of PyTorch, like a fixed-size export.",
+    )
     p_dup = sub.add_parser("duplicates", parents=[common], help="Nearest train image of every val / test image.")
     p_dup.add_argument("--batch", type=int, default=64)
     p_dup.add_argument("--workers", type=int, default=4)
     p_dup.add_argument("--device", help="0, cpu, ... (default: first GPU if there is one).")
+    p_group = sub.add_parser("group-split", parents=[common], help="Split that keeps near-duplicates together.")
+    p_group.add_argument("--batch", type=int, default=64)
+    p_group.add_argument("--workers", type=int, default=4)
+    p_group.add_argument("--device", help="Only used if the embeddings are not cached yet.")
+    p_export = sub.add_parser("export", parents=[common], help="OpenVINO export (FP32, FP16, INT8).")
+    p_export.add_argument("--weights", required=True, help="best.pt of a run.")
+    p_export.add_argument("--precision", nargs="+", default=["fp32", "fp16", "int8"], choices=["fp32", "fp16", "int8"])
+    p_export.add_argument("--calibration-images", type=int, default=50, help="INT8: train images per country.")
+    p_bench = sub.add_parser("benchmark", parents=[common], help="Latency and throughput of OpenVINO models.")
+    p_bench.add_argument("--weights", required=True, help="best.pt, also measured with PyTorch on the CPU.")
+    p_bench.add_argument("--models", nargs="+", type=Path, required=True, help="OpenVINO model folders.")
+    p_bench.add_argument("--devices", nargs="+", default=["CPU", "GPU", "NPU"])
+    p_bench.add_argument("--images", type=int, default=50, help="Test images used as inputs.")
+    p_bench.add_argument("--runs", type=int, default=200)
 
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S")
@@ -98,12 +121,27 @@ def main(argv: list[str] | None = None) -> None:
         from road_damage.train import evaluate, markdown_table
 
         similarity = tuple(args.similarity) if args.similarity else None
-        print(markdown_table(evaluate(cfg, args.weights, args.split, similarity), cfg["data"]["classes"]))
+        results = evaluate(cfg, args.weights, args.split, similarity, tag=args.tag, square=args.square)
+        print(markdown_table(results, cfg["data"]["classes"]))
     elif args.command == "duplicates":
         from road_damage.duplicates import duplicates_table, find_duplicates
 
         result = find_duplicates(cfg, batch=args.batch, workers=args.workers, device=args.device)
         print(duplicates_table(result))
+    elif args.command == "group-split":
+        from road_damage.duplicates import group_split, groups_table
+
+        print(groups_table(group_split(cfg, batch=args.batch, workers=args.workers, device=args.device)))
+    elif args.command == "export":
+        from road_damage.deploy import export
+
+        for precision in args.precision:
+            print(export(cfg, args.weights, precision, args.calibration_images))
+    elif args.command == "benchmark":
+        from road_damage.deploy import benchmark, benchmark_table
+
+        rows = benchmark(cfg, Path(args.weights), args.models, args.devices, args.images, args.runs)
+        print(benchmark_table(rows))
 
 
 if __name__ == "__main__":

@@ -46,6 +46,15 @@ def test_train_and_evaluate_end_to_end(prepared_cfg):
     assert sub["Norway"]["images"] == len(norway_test)
     assert (best.parent.parent / "eval_test_64_sim0-0.5.json").exists()
 
+    # split by groups with Norway in train only: no Norway row, separate file
+    from road_damage.duplicates import group_split
+
+    rdd_cfg["data"].update({"split_dir": "yolo_groups", "group_threshold": 0.5, "train_only": ["Norway"]})
+    group_split(rdd_cfg)
+    assert set(evaluate(rdd_cfg, best)) == {"all", "Japan"}
+    assert (best.parent.parent / "eval_test_64_yolo_groups.json").exists()
+    rdd_cfg["data"]["split_dir"] = "yolo"
+
     # one country at another size: no "all" row, separate file
     rdd_cfg["data"]["countries"] = ["Norway"]
     rdd_cfg["train"]["imgsz"] = 96

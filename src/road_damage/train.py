@@ -8,6 +8,8 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 from road_damage.data import dataset_yaml
 
 log = logging.getLogger(__name__)
@@ -47,27 +49,43 @@ def train(cfg: dict[str, Any], country: str | None = None, name: str | None = No
 
 
 def evaluate(
-    cfg: dict[str, Any], weights: str | Path, split: str = "test", similarity: tuple[float, float] | None = None
+    cfg: dict[str, Any],
+    weights: str | Path,
+    split: str = "test",
+    similarity: tuple[float, float] | None = None,
+    tag: str | None = None,
+    square: bool = False,
 ) -> dict[str, Any]:
     """mAP on `split` for each country, and for all of them together when there is more than one.
 
-    "all" is every country of `rdd prepare`. `similarity` = (lo, hi) only keeps the images whose nearest train image
-    has a cosine similarity in [lo, hi) (see `rdd duplicates`). Results go next to the weights' run, in
-    eval_<split>_<imgsz>[_sim<lo>-<hi>].json / .md.
+    "all" is every country of the split's dataset file, countries without images in `split` are skipped.
+    `similarity` = (lo, hi) only keeps the images whose nearest train image has a cosine similarity in [lo, hi) (see
+    `rdd duplicates`). `weights` can also be an exported model folder (OpenVINO, with device intel:cpu / gpu / npu).
+    Results go next to the run, in eval_<split>_<imgsz>[_<split_dir>][_sim<lo>-<hi>][_<tag>].json and .md (no
+    split_dir suffix for yolo/).
+
+    PyTorch models are evaluated on rectangular batches, with a border of half a stride around the image. An export
+    with a fixed input gets imgsz x imgsz without it: `square` does the same with a PyTorch model, to compare them.
     """
     classes = cfg["data"]["classes"]
     imgsz = cfg["train"]["imgsz"]
     countries = list(cfg["data"]["countries"])
-    tag = f"{split}_{imgsz}" + (f"_sim{similarity[0]:g}-{similarity[1]:g}" if similarity else "")
+    split_dir = cfg["data"]["split_dir"]
+    name = f"{split}_{imgsz}" + ("" if split_dir == "yolo" else f"_{split_dir}")
+    name += f"_sim{similarity[0]:g}-{similarity[1]:g}" if similarity else ""
+    name += f"_{tag}" if tag else ""
     run = Path(weights).resolve().parent.parent
     model = load_model(weights)
     results = {}
     for country in countries if len(countries) == 1 else ["all", *countries]:
         data, images = dataset_yaml(cfg, country), None
+        if not yaml.safe_load(data.read_text(encoding="utf-8"))[split]:
+            log.info("%s: no %s images in this split", country, split)
+            continue
         if similarity:
             from road_damage.duplicates import subset_yaml
 
-            sub = subset_yaml(cfg, country, split, similarity, run / f"data_{tag}")
+            sub = subset_yaml(cfg, country, split, similarity, run / f"data_{name}")
             if sub is None:
                 log.info("%s: no image in this similarity range", country)
                 continue
@@ -80,10 +98,11 @@ def evaluate(
             workers=cfg["train"]["workers"],
             device=cfg["train"]["device"],
             project=str(run),
-            name=f"val_{tag}_{country}",
+            name=f"val_{name}_{country}",
             exist_ok=True,
             plots=country == "all",
             verbose=False,
+            **({"rect": False} if square else {}),
         )
         results[country] = {
             "map50": float(m.box.map50),
@@ -97,9 +116,10 @@ def evaluate(
         if images is not None:
             results[country]["images"] = images
         log.info("%-16s mAP50 %.3f  mAP50-95 %.3f", country, results[country]["map50"], results[country]["map50_95"])
-    meta = {"weights": str(weights), "imgsz": imgsz, "similarity": similarity}
-    (run / f"eval_{tag}.json").write_text(json.dumps({**meta, **results}, indent=2), "utf-8")
-    (run / f"eval_{tag}.md").write_text(markdown_table(results, classes) + "\n", "utf-8")
+    meta = {"weights": str(weights), "imgsz": imgsz, "similarity": similarity, "device": cfg["train"]["device"]}
+    meta["square"] = square
+    (run / f"eval_{name}.json").write_text(json.dumps({**meta, **results}, indent=2), "utf-8")
+    (run / f"eval_{name}.md").write_text(markdown_table(results, classes) + "\n", "utf-8")
     return results
 
 

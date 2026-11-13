@@ -167,8 +167,8 @@ def prepare(cfg: dict[str, Any]) -> dict[str, Any]:
     """Write YOLO labels next to the images, the split lists and the Ultralytics dataset files.
 
     Labels go to <country>/train/labels/ (Ultralytics finds them by replacing /images/ with /labels/). Outputs in
-    <root>/yolo/: <country>_<split>.txt (absolute image paths), rdd2022.yaml (all countries), rdd2022_<country>.yaml,
-    splits.json (image names per split) and stats.json.
+    <root>/yolo/ (always, whatever data.split_dir): <country>_<split>.txt (absolute image paths), rdd2022.yaml (all
+    countries), rdd2022_<country>.yaml, splits.json (image names per split) and stats.json.
     """
     d = cfg["data"]
     root = Path(d["root"]).resolve()
@@ -197,27 +197,42 @@ def prepare(cfg: dict[str, Any]) -> dict[str, Any]:
         s["boxes"] = {c: s["boxes"][c] for c in classes}
         s["dropped"] = dict(sorted(s["dropped"].items()))
         stats[country] = s
-        by_name = {p.name: p for p, _ in items}
-        splits[country] = block_split(list(by_name), d["split"], d["block_size"], f"{d['seed']}-{country}")
-        for split, names in splits[country].items():
-            (out / f"{country}_{split}.txt").write_text("".join(f"{by_name[n].as_posix()}\n" for n in names), "utf-8")
+        splits[country] = block_split([p.name for p, _ in items], d["split"], d["block_size"], f"{d['seed']}-{country}")
         log.info("%s: %d images, %s", country, len(items), {k: len(v) for k, v in splits[country].items()})
-    for name, countries in [("rdd2022", d["countries"]), *[(f"rdd2022_{c}", [c]) for c in d["countries"]]]:
-        dataset = {"path": out.as_posix()}
-        dataset.update({split: [f"{c}_{split}.txt" for c in countries] for split in SPLITS})
-        dataset["names"] = dict(enumerate(classes))
-        (out / f"{name}.yaml").write_text(yaml.safe_dump(dataset, sort_keys=False), "utf-8")
-    meta = {"classes": classes, "split": d["split"], "block_size": d["block_size"], "seed": d["seed"]}
-    (out / "splits.json").write_text(json.dumps({**meta, "splits": splits}, indent=1), "utf-8")
+    meta = {"split": d["split"], "block_size": d["block_size"], "seed": d["seed"]}
+    write_split(root, out, splits, classes, meta)
     (out / "stats.json").write_text(json.dumps(stats, indent=2), "utf-8")
     return stats
 
 
+def write_split(
+    root: Path, out: Path, splits: dict[str, dict[str, list[str]]], classes: Sequence[str], meta: dict[str, Any]
+) -> None:
+    """<country>_<split>.txt lists, rdd2022.yaml (all countries), rdd2022_<country>.yaml and splits.json in `out`.
+
+    An empty split is left out of the dataset files (a country kept for training only has no val / test).
+    """
+    out.mkdir(parents=True, exist_ok=True)
+    for country, parts in splits.items():
+        images = root / country / "train" / "images"
+        for split, names in parts.items():
+            (out / f"{country}_{split}.txt").write_text("".join(f"{(images / n).as_posix()}\n" for n in names), "utf-8")
+    countries = list(splits)
+    for name, subset in [("rdd2022", countries), *[(f"rdd2022_{c}", [c]) for c in countries]]:
+        dataset = {"path": out.as_posix()}
+        dataset.update({split: [f"{c}_{split}.txt" for c in subset if splits[c][split]] for split in SPLITS})
+        dataset["names"] = dict(enumerate(classes))
+        (out / f"{name}.yaml").write_text(yaml.safe_dump(dataset, sort_keys=False), "utf-8")
+    meta = {"classes": list(classes), **meta}
+    (out / "splits.json").write_text(json.dumps({**meta, "splits": splits}, indent=1), "utf-8")
+
+
 def dataset_yaml(cfg: dict[str, Any], country: str | None = None) -> Path:
+    """Dataset file of data.split_dir: yolo/ is the random split of `rdd prepare`, see also `rdd group-split`."""
     name = "rdd2022" if country in (None, "all") else f"rdd2022_{country}"
-    path = Path(cfg["data"]["root"]).resolve() / "yolo" / f"{name}.yaml"
+    path = Path(cfg["data"]["root"]).resolve() / cfg["data"]["split_dir"] / f"{name}.yaml"
     if not path.exists():
-        raise FileNotFoundError(f"{path} not found: run `rdd prepare` first.")
+        raise FileNotFoundError(f"{path} not found: run `rdd prepare` (or `rdd group-split`) first.")
     return path
 
 

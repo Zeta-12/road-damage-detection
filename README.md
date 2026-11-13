@@ -12,11 +12,13 @@ In short:
   clearly better in Norway.
 - The score goes from 0.29 to 0.93 depending on the subset. The 0.93 of China_MotorBike is inflated by
   near-duplicates between train and test (the same damage photographed several times), found with a nearest
-  neighbour search on image embeddings.
+  neighbour search on image embeddings. On a split that keeps near-duplicates together, YOLO26s gets 0.544.
 - Norway is limited by the input size: +7 points of mAP50 by running YOLO26s at 1280 px instead of 640.
+- On an Intel Core Ultra laptop, INT8 on the iGPU runs at 9 ms per image (111 img/s) for 0.9 point of mAP50. The NPU
+  should stay in FP16: INT8 costs 2.7 points there and is not faster.
 
-Status: YOLO26s and RT-DETR-L trained on all countries, results below. Next: a split without near-duplicates, then
-OpenVINO.
+Status: training, near-duplicate analysis and OpenVINO deployment done, results below. Next: Norway at 1280 px,
+cross-country, C++ app.
 
 ## Dataset
 
@@ -107,7 +109,8 @@ Test split (`rdd evaluate`):
    - Norway goes the other way (0.249 with a near copy, 0.315 without). Many of its near copies are the same road a
      few metres further, but at 640 px the cracks are too small for the copy to help (point 3).
 
-   A test set without leaks needs a split by groups of near-duplicates (see [Plan](#plan)).
+   A test set without leaks needs a split by groups of near-duplicates, see
+   [below](#yolo26s-on-a-split-without-near-duplicates).
 
 3. **Norway is limited by the input size.** Its images are 3643 to 4040 px wide and 640 px divides them by 6. Same
    weights, Norway test only, larger inference size (`rdd evaluate --countries Norway --imgsz 1280`):
@@ -160,24 +163,100 @@ Test mAP50 per subset:
    lower in every subset except Japan (same) and Norway. For the edge part, the model to deploy is YOLO26s.
 
 2. **Norway is the exception: 0.388 vs 0.291.** RT-DETR-L is better on the 4 classes there (D10 0.402 vs 0.259),
-   with a recall of 0.405 vs 0.299, and it beats YOLO26s run at 1280 px (0.364). I haven't checked why yet. At 640 px
-   the Norway cracks are long and less than a pixel wide; my guess is that the self-attention of the RT-DETR encoder,
-   which sees the whole image at stride 32, helps to follow them. To test: RT-DETR-L at 1280 px on Norway.
+   with a recall of 0.405 vs 0.299, and it beats YOLO26s run at 1280 px (0.364). Run at 1280 px itself, it drops to
+   0.353: unlike YOLO26s it does not gain from a bigger input without retraining. I haven't checked why it is better
+   there. At 640 px the Norway cracks are long and less than a pixel wide; my guess is that the self-attention of the
+   RT-DETR encoder, which sees the whole image at stride 32, helps to follow them.
 
 3. **It learns faster and overfits sooner.** Val mAP50 at epoch 5: 0.539 (YOLO26s: 0.330). It peaks at 0.616 at
    epoch 24, ends at 0.603 at epoch 40, and the val GIoU loss goes up from epoch 15. 20 epochs (6.6 h) would have
    been enough.
+
+### YOLO26s on a split without near-duplicates
+
+`rdd group-split --config configs/grouped.yaml` links the images whose embeddings have a cosine similarity of at
+least 0.96 (the threshold found on the pairs above), takes the connected components as groups and gives whole groups
+to train, val and test: 70 / 10 / 20 per subset, biggest groups first, each one to the split furthest below its
+target. After it, the closest train image of any test image is at 0.960.
+
+- China_MotorBike goes to train only. Its copies go down to 0.87, and at 0.90 one group already holds 79 % of its
+  images, so there is no clean split for it.
+- Norway chains: one group holds 2665 of its images (33 %), look-alike rural roads. It goes to train and the Norway
+  test is drawn from the rest.
+
+YOLO26s retrained on this split (`rdd train --config configs/grouped.yaml`: 70 epochs, 5.8 h, best val epoch 59):
+
+| Test set | Random split | Split by groups | Difference |
+|---|---|---|---|
+| all | 0.600 | 0.544 | -0.056 |
+| Japan | 0.579 | 0.579 | 0.000 |
+| India | 0.401 | 0.406 | +0.005 |
+| Norway | 0.291 | 0.251 | -0.040 |
+| United_States | 0.653 | 0.638 | -0.015 |
+| Czech | 0.410 | 0.387 | -0.023 |
+| China_Drone | 0.701 | 0.697 | -0.004 |
+
+The test images are not the same in the two splits, so a difference per subset mixes the effect of the leaks and a
+change of test images.
+
+1. **0.544 mAP50 (0.272 mAP50-95) is the number to quote**, on the 6 subsets that can be split cleanly. Most of the
+   drop of "all" comes from China_MotorBike leaving the test set.
+2. **Per subset the leaks were worth 0 to 2 points**, as the similarity filter above suggested, except in Norway
+   (-4 points). Its test no longer shares any road with train; I haven't looked further.
+3. Norway at 1280 px with this model: 0.328, against 0.251 at 640.
+
+### Deployment on an Intel laptop (OpenVINO)
+
+The YOLO26s of the split without near-duplicates, exported with `rdd export` (OpenVINO 2026.4): FP32, FP16 (weights
+stored in FP16) and INT8 (NNCF post-training quantization, calibrated on 50 train images per subset, Ultralytics
+keeps the detection head in floating point). Laptop: Intel Core Ultra 5 235U with its CPU, Intel Graphics iGPU and
+AI Boost NPU, plugged in, Balanced power mode. Batch 1, 640x640 input.
+
+Latency is the median of 200 inferences one image at a time (LATENCY hint), throughput uses parallel requests
+(THROUGHPUT hint), `rdd benchmark`:
+
+| | CPU | iGPU | NPU |
+|---|---|---|---|
+| PyTorch FP32 | 125 ms | | |
+| OpenVINO FP32 | 71.5 ms, 18 img/s | 16.5 ms, 47 img/s | 14.7 ms, 80 img/s |
+| OpenVINO FP16 | 80.9 ms, 16 img/s | 17.0 ms, 47 img/s | 14.9 ms, 79 img/s |
+| OpenVINO INT8 | 29.9 ms, 48 img/s | 9.0 ms, 111 img/s | 14.6 ms, 85 img/s |
+
+Test mAP50 on 640x640 inputs (`rdd evaluate --device intel:cpu`, `intel:gpu` or `intel:npu`):
+
+| | CPU | iGPU | NPU |
+|---|---|---|---|
+| PyTorch FP32 | 0.525 | | |
+| OpenVINO FP32 / FP16 | 0.525 | 0.525 | 0.525 |
+| OpenVINO INT8 | 0.517 | 0.516 | 0.498 |
+
+1. **The export gives the same boxes as PyTorch, the evaluation protocol is what differs.** Ultralytics evaluates a
+   PyTorch model on rectangular batches, with a border of half a stride (16 px) around the image, while a model
+   exported with a fixed size gets exactly 640x640. That alone moves the mAP50 from 0.544 to 0.525 (China_Drone: 0.697
+   to 0.652). With `rdd evaluate --square` PyTorch gets the same inputs as the export and the same mAP, 0.525 overall
+   and in every subset to the third decimal.
+2. **FP16 costs nothing**, on the 3 devices. On the iGPU and the NPU, FP32 and FP16 also run at the same speed: both
+   compute in FP16 by default.
+3. **INT8 costs 0.8 to 0.9 point on the CPU and the iGPU.** It is 2.4x faster than FP32 on the CPU (4.2x faster than
+   PyTorch) and 1.8x on the iGPU. The fastest setup is INT8 on the iGPU: 9 ms per image, 111 img/s.
+4. **The same INT8 model loses 2.7 points on the NPU** (India -4.7, Norway -5.2) and is not faster there than FP16
+   (14.6 vs 14.9 ms), so the NPU should run the FP16 model. I haven't looked at what the NPU compiler does
+   differently with the INT8 graph.
+5. The CPU timings moved by about 20 % between two runs on different days (PyTorch 158 then 125 ms), the NPU ones did
+   not. The ratios between precisions stayed the same.
 
 ## Plan
 
 - [x] YOLO26s on all countries, mAP per country
 - [x] RT-DETR-L on all countries
 - [x] Near-duplicates between train and test
-- [ ] Split by groups of near-duplicates and retrain, for a test set without leaks
-- [ ] Norway at 1280 px (training at that size, or tiles), RT-DETR-L included
+- [x] Split by groups of near-duplicates and retrain, for a test set without leaks
+- [ ] Norway at 1280 px (training at that size, or tiles)
 - [ ] Cross-country: train on one subset, test on the others
-- [ ] OpenVINO FP16 / INT8 (post-training quantization, then quantization-aware training if needed), latency and mAP
-  on CPU / iGPU / NPU
+- [x] OpenVINO FP16 / INT8 (post-training quantization), latency and mAP on CPU / iGPU / NPU. Quantization-aware
+  training is not needed for the CPU and the iGPU (-0.8 to -0.9 point)
+- [ ] INT8 on the NPU: find where the 2.7 points go (layer by layer against the FP16 run)
+- [ ] Fixed 672x672 input with the image at 640, the border of the rectangular batches, to get the 2 points back
 - [ ] C++ inference app with OpenVINO
 
 ## Quickstart
@@ -197,6 +276,24 @@ uv run rdd evaluate --weights runs/yolo26s_all/weights/best.pt
 uv run rdd duplicates         # nearest train image of every val / test image
 uv run rdd evaluate --weights runs/yolo26s_all/weights/best.pt --similarity 0 0.96
 uv run rdd train --config configs/rtdetr.yaml
+
+# split without near-duplicates (reuses the cached embeddings of rdd duplicates)
+uv run rdd group-split --config configs/grouped.yaml
+uv run rdd train --config configs/grouped.yaml --name yolo26s_groups
+uv run rdd evaluate --config configs/grouped.yaml --weights runs/yolo26s_groups/weights/best.pt
+```
+
+OpenVINO export and benchmark on an Intel CPU / iGPU / NPU (`--extra openvino`):
+
+```bash
+uv sync --extra openvino
+W=runs/yolo26s_groups/weights
+uv run rdd export --config configs/grouped.yaml --weights $W/best.pt    # FP32, FP16, INT8
+uv run rdd benchmark --config configs/grouped.yaml --weights $W/best.pt \
+    --models $W/best_fp32_openvino_model $W/best_fp16_openvino_model $W/best_int8_openvino_model
+uv run rdd evaluate --config configs/grouped.yaml --weights $W/best_int8_openvino_model \
+    --device intel:npu --tag int8_npu
+uv run rdd evaluate --config configs/grouped.yaml --weights $W/best.pt --square    # same inputs as the export
 ```
 
 On an NVIDIA GPU, replace the CPU wheels with the CUDA build that matches your driver, then use `--no-sync` so uv
@@ -213,11 +310,13 @@ uv run --no-sync rdd train --model yolo26s.pt
 src/road_damage/
   data.py        download, VOC to YOLO labels, block split per country, dataset files, stats
   train.py       Ultralytics training, mAP per country
-  duplicates.py  nearest train image of every val / test image (ResNet-50 embeddings)
+  duplicates.py  nearest train image of every val / test image (ResNet-50 embeddings), split by groups
+  deploy.py      OpenVINO export (FP32, FP16, INT8), latency and throughput on CPU / iGPU / NPU
   config.py      defaults and YAML overrides
   cli.py         `rdd` command
-tests/           unit tests on a small synthetic dataset in RDD2022 layout, and a 1-epoch end-to-end run
-configs/         default.yaml with all the parameters, rtdetr.yaml
+tests/           unit tests on a small synthetic dataset in RDD2022 layout, 1-epoch end-to-end runs (Ultralytics,
+                 OpenVINO export)
+configs/         default.yaml with all the parameters, rtdetr.yaml, grouped.yaml
 ```
 
 ## Dataset and licence

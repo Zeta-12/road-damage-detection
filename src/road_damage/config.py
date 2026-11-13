@@ -16,6 +16,9 @@ DEFAULTS: dict[str, Any] = {
         "split": [0.7, 0.1, 0.2],
         "block_size": 1,
         "seed": 42,
+        "split_dir": "yolo",
+        "group_threshold": 0.96,
+        "train_only": [],
     },
     "train": {
         "model": "yolo26s.pt",
