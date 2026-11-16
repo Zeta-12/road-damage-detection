@@ -3,8 +3,21 @@
 [![CI](https://github.com/Zeta-12/road-damage-detection/actions/workflows/ci.yml/badge.svg)](https://github.com/Zeta-12/road-damage-detection/actions/workflows/ci.yml)
 
 Detection of cracks and potholes in images taken from vehicles, on the RDD2022 dataset (Japan, India, Norway, United
-States, Czech Republic, China). I compare a CNN detector (YOLO) with a transformer detector (RT-DETR), measure how a
-model trained in some countries works in the others, and deploy the best one on an edge device (OpenVINO, INT8, C++).
+States, Czech Republic, China). I compare a CNN detector (YOLO) with a transformer detector (RT-DETR), check the test
+set for near-duplicates of training images, and deploy YOLO26s on the CPU, iGPU and NPU of an Intel laptop (OpenVINO,
+INT8, C++ app).
+
+![Detections of the C++ app on test images](docs/assets/detections.jpg)
+
+Boxes found by the C++ app (FP32 model, confidence 0.25) on test images of the split without near-duplicates, picked
+among the images where it finds every labelled box and nothing else.
+
+| Model | Test split | mAP50 | mAP50-95 | Time per image |
+|---|---|---|---|---|
+| YOLO26s, PyTorch | random | 0.600 | 0.311 | 4.0 ms, RTX 3060 Ti, batch 16 |
+| RT-DETR-L, PyTorch | random | 0.601 | 0.293 | 16.2 ms, RTX 3060 Ti, batch 8 |
+| YOLO26s, PyTorch | without near-duplicates | 0.544 | 0.272 | |
+| YOLO26s, OpenVINO INT8, 640x640 input | without near-duplicates | 0.516 | 0.247 | 9.0 ms, laptop iGPU, batch 1 |
 
 In short:
 
@@ -18,8 +31,8 @@ In short:
   should stay in FP16: INT8 costs 2.7 points there and is not faster. A C++ app (OpenVINO + OpenCV, one file) gives
   the same boxes as Ultralytics and adds about 3 ms per image.
 
-Status: training, near-duplicate analysis, OpenVINO deployment and C++ app done, results below. Next: Norway at
-1280 px, cross-country.
+Status: training, near-duplicate analysis, OpenVINO deployment and C++ app done, results below. Next: cross-country
+(train on some subsets, test on the others), Norway trained at 1280 px.
 
 ## Dataset
 
@@ -178,7 +191,7 @@ Test mAP50 per subset:
 `rdd group-split --config configs/grouped.yaml` links the images whose embeddings have a cosine similarity of at
 least 0.96 (the threshold found on the pairs above), takes the connected components as groups and gives whole groups
 to train, val and test: 70 / 10 / 20 per subset, biggest groups first, each one to the split furthest below its
-target. After it, the closest train image of any test image is at 0.960.
+target. After it, no test image has a train image at 0.96 or more.
 
 - China_MotorBike goes to train only. Its copies go down to 0.87, and at 0.90 one group already holds 79 % of its
   images, so there is no clean split for it.
@@ -251,7 +264,8 @@ Test mAP50 on 640x640 inputs (`rdd evaluate --device intel:cpu`, `intel:gpu` or 
 
 `cpp/main.cpp` runs the exported model with the OpenVINO C++ API and OpenCV, in one file of about 180 lines:
 letterbox like Ultralytics, inference, best class of each anchor, NMS per class, boxes back on the original image.
-It writes the images with their boxes and a `detections.csv`, and prints the median time of each step.
+It writes the images with their boxes and a `detections.csv`, and prints the median time of each step. The boxes of
+the image at the top of this page come from its `detections.csv`.
 
 1. **Same boxes as Ultralytics.** On the 7631 images copied to the laptop (test and calibration), the app and
    Ultralytics find the same 8007 boxes with the FP32 model: same class and an IoU above 0.99 for each one.
@@ -349,7 +363,8 @@ src/road_damage/
   data.py        download, VOC to YOLO labels, block split per country, dataset files, stats
   train.py       Ultralytics training, mAP per country
   duplicates.py  nearest train image of every val / test image (ResNet-50 embeddings), split by groups
-  deploy.py      OpenVINO export (FP32, FP16, INT8), latency and throughput on CPU / iGPU / NPU
+  deploy.py      OpenVINO export (FP32, FP16, INT8), latency and throughput on CPU / iGPU / NPU, C++ boxes
+                 against Ultralytics
   config.py      defaults and YAML overrides
   cli.py         `rdd` command
 cpp/             C++ app: main.cpp (OpenVINO + OpenCV), CMakeLists.txt
@@ -362,7 +377,8 @@ configs/         default.yaml with all the parameters, rtdetr.yaml, grouped.yaml
 
 [RDD2022](https://doi.org/10.6084/m9.figshare.21431547) (Arya et al., [arXiv:2209.08538](https://arxiv.org/abs/2209.08538))
 is distributed under CC BY 4.0 and is not included in this repository. `rdd download` fetches it from figshare and
-checks the MD5. The 8 photos in `docs/assets/china_motorbike_pairs.jpg` come from RDD2022.
+checks the MD5. The photos in `docs/assets/` come from RDD2022: resized, the wide ones cropped to a
+square, with the boxes, labels and similarity scores added.
 
 Code: AGPL-3.0, because it uses [Ultralytics](https://github.com/ultralytics/ultralytics) (AGPL-3.0).
 
