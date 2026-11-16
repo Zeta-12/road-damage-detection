@@ -15,10 +15,11 @@ In short:
   neighbour search on image embeddings. On a split that keeps near-duplicates together, YOLO26s gets 0.544.
 - Norway is limited by the input size: +7 points of mAP50 by running YOLO26s at 1280 px instead of 640.
 - On an Intel Core Ultra laptop, INT8 on the iGPU runs at 9 ms per image (111 img/s) for 0.9 point of mAP50. The NPU
-  should stay in FP16: INT8 costs 2.7 points there and is not faster.
+  should stay in FP16: INT8 costs 2.7 points there and is not faster. A C++ app (OpenVINO + OpenCV, one file) gives
+  the same boxes as Ultralytics and adds about 3 ms per image.
 
-Status: training, near-duplicate analysis and OpenVINO deployment done, results below. Next: Norway at 1280 px,
-cross-country, C++ app.
+Status: training, near-duplicate analysis, OpenVINO deployment and C++ app done, results below. Next: Norway at
+1280 px, cross-country.
 
 ## Dataset
 
@@ -242,8 +243,32 @@ Test mAP50 on 640x640 inputs (`rdd evaluate --device intel:cpu`, `intel:gpu` or 
 4. **The same INT8 model loses 2.7 points on the NPU** (India -4.7, Norway -5.2) and is not faster there than FP16
    (14.6 vs 14.9 ms), so the NPU should run the FP16 model. I haven't looked at what the NPU compiler does
    differently with the INT8 graph.
-5. The CPU timings moved by about 20 % between two runs on different days (PyTorch 158 then 125 ms), the NPU ones did
-   not. The ratios between precisions stayed the same.
+5. The CPU timings change a lot from one day to the next on this laptop, plugged in with the same power mode: PyTorch
+   took 158, 125 and 267 ms on three days, INT8 on the CPU 39, 30 and 50 ms. The iGPU moved by up to 25 %, the NPU
+   stayed between 13.5 and 15 ms. The table above is the second day.
+
+### C++ app
+
+`cpp/main.cpp` runs the exported model with the OpenVINO C++ API and OpenCV, in one file of about 180 lines:
+letterbox like Ultralytics, inference, best class of each anchor, NMS per class, boxes back on the original image.
+It writes the images with their boxes and a `detections.csv`, and prints the median time of each step.
+
+1. **Same boxes as Ultralytics.** On the 7631 images copied to the laptop (test and calibration), the app and
+   Ultralytics find the same 8007 boxes with the FP32 model: same class and an IoU above 0.99 for each one.
+   `tests/test_cpp.py` checks the same thing on the toy dataset, in CI. The first version was 1 to 2 px off on the
+   Norway images: I undid the resize with one scale for both axes, but each side of the resized image is rounded to
+   whole pixels, so the two scales differ (358 / 2044 and 640 / 3650 for a 3650x2044 image).
+2. **The C++ code adds about 3 ms to the inference.** Median time per image on 300 test images (50 per subset),
+   measured the same day as a new `rdd benchmark` run (the slow day of point 5):
+
+   | | Preprocessing | Inference | Decoding + NMS | `rdd benchmark`, same day |
+   |---|---|---|---|---|
+   | INT8, iGPU | 2.8 ms | 11.5 ms | 0.07 ms | 11.4 ms |
+   | FP16, NPU | 2.3 ms | 16.1 ms | 0.06 ms | 15.2 ms |
+   | INT8, CPU | 2.9 ms | 43.6 ms | 0.08 ms | 50.4 ms |
+
+   The inference takes the same time as from Python on the iGPU and the NPU: OpenVINO does the work in both cases.
+   Preprocessing is the resize, the border and the conversion to float, decoding and NMS take less than 0.1 ms.
 
 ## Plan
 
@@ -257,7 +282,8 @@ Test mAP50 on 640x640 inputs (`rdd evaluate --device intel:cpu`, `intel:gpu` or 
   training is not needed for the CPU and the iGPU (-0.8 to -0.9 point)
 - [ ] INT8 on the NPU: find where the 2.7 points go (layer by layer against the FP16 run)
 - [ ] Fixed 672x672 input with the image at 640, the border of the rectangular batches, to get the 2 points back
-- [ ] C++ inference app with OpenVINO
+- [x] C++ inference app with OpenVINO, images only
+- [ ] Video input in the C++ app
 
 ## Quickstart
 
@@ -296,6 +322,18 @@ uv run rdd evaluate --config configs/grouped.yaml --weights $W/best_int8_openvin
 uv run rdd evaluate --config configs/grouped.yaml --weights $W/best.pt --square    # same inputs as the export
 ```
 
+C++ app, tested on Windows with the Visual Studio 2022 Build Tools and OpenCV 4.14 (it needs OpenCV 4.7 or later).
+The OpenVINO headers, libraries and CMake files come with the openvino pip package:
+
+```bash
+cmake -S cpp -B cpp/build -DOpenVINO_DIR=.venv/Lib/site-packages/openvino/cmake -DOpenCV_DIR=<opencv>/build
+cmake --build cpp/build --config Release
+cpp/build/Release/rdd_detect --model $W/best_int8_openvino_model/best.xml --input images/ --output out/ --device GPU
+```
+
+To run it on Windows, `.venv/Lib/site-packages/openvino/libs` and `<opencv>/build/x64/vc16/bin` must be on the PATH.
+`RDD_DETECT=<path of rdd_detect> uv run pytest tests/test_cpp.py` compares its boxes with Ultralytics.
+
 On an NVIDIA GPU, replace the CPU wheels with the CUDA build that matches your driver, then use `--no-sync` so uv
 does not put the CPU wheels back:
 
@@ -314,8 +352,9 @@ src/road_damage/
   deploy.py      OpenVINO export (FP32, FP16, INT8), latency and throughput on CPU / iGPU / NPU
   config.py      defaults and YAML overrides
   cli.py         `rdd` command
+cpp/             C++ app: main.cpp (OpenVINO + OpenCV), CMakeLists.txt
 tests/           unit tests on a small synthetic dataset in RDD2022 layout, 1-epoch end-to-end runs (Ultralytics,
-                 OpenVINO export)
+                 OpenVINO export, C++ app)
 configs/         default.yaml with all the parameters, rtdetr.yaml, grouped.yaml
 ```
 

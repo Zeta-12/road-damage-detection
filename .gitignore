@@ -13,6 +13,9 @@ runs/
 *.engine
 *_openvino_model/
 
+# C++ build
+cpp/build/
+
 # Tooling
 .pytest_cache/
 .ruff_cache/

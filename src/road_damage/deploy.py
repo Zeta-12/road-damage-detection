@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import logging
 import random
@@ -161,3 +162,38 @@ def benchmark_table(rows: Sequence[dict[str, Any]]) -> str:
         fps = f"{r['throughput_fps']:.1f}" if "throughput_fps" in r else "-"
         lines.append(f"| {r['model']} | {r['device']} | {r['median_ms']:.1f} | {r['p90_ms']:.1f} | {fps} |")
     return "\n".join(lines)
+
+
+def box_iou(a: Sequence[float], b: Sequence[float]) -> float:
+    w = min(a[2], b[2]) - max(a[0], b[0])
+    h = min(a[3], b[3]) - max(a[1], b[1])
+    inter = max(w, 0) * max(h, 0)
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / union if union > 0 else 0.0
+
+
+def compare_with_ultralytics(
+    model_dir: Path, detections_csv: Path, images: Sequence[Path], conf: float = 0.25, iou: float = 0.7
+) -> dict[str, int]:
+    """Boxes of the C++ app (detections.csv of cpp/rdd_detect) against Ultralytics on the same OpenVINO model.
+
+    A box matches when Ultralytics has one of the same class with an IoU above 0.99.
+    """
+    from ultralytics import YOLO
+
+    imgsz = yaml.safe_load((model_dir / "metadata.yaml").read_text(encoding="utf-8"))["imgsz"]
+    model = YOLO(str(model_dir), task="detect")
+    cpp: dict[str, list[tuple[str, list[float]]]] = {}
+    with detections_csv.open(encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            cpp.setdefault(row["image"], []).append((row["class"], [float(row[k]) for k in ("x1", "y1", "x2", "y2")]))
+    counts = {"images": 0, "cpp": 0, "ultralytics": 0, "matched": 0}
+    for path in images:
+        r = model.predict(str(path), imgsz=imgsz, conf=conf, iou=iou, device="intel:cpu", verbose=False)[0]
+        ref = [(model.names[int(c)], b.tolist()) for c, b in zip(r.boxes.cls, r.boxes.xyxy, strict=True)]
+        mine = cpp.get(path.name, [])
+        counts["images"] += 1
+        counts["cpp"] += len(mine)
+        counts["ultralytics"] += len(ref)
+        counts["matched"] += sum(any(c == rc and box_iou(b, rb) > 0.99 for rc, rb in ref) for c, b in mine)
+    return counts

@@ -21,3 +21,29 @@ jobs:
           uv run ruff format --check src tests
       - name: Unit tests
         run: uv run pytest
+
+  cpp:
+    # builds cpp/ with MSVC and checks its boxes against Ultralytics (tests/test_cpp.py)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install (CPU wheels)
+        run: uv sync --locked --group dev --extra openvino --python 3.12
+      - name: OpenCV 4.14.0
+        run: |
+          curl.exe -sSfL -o opencv.exe https://github.com/opencv/opencv/releases/download/4.14.0/opencv-4.14.0-windows.exe
+          $sha = "5f266a8b73bed535962d7e861a6457e32a0dd5f463ad0a7cf8707a135469be63"
+          if ((Get-FileHash opencv.exe -Algorithm SHA256).Hash -ne $sha) { throw "bad OpenCV archive" }
+          7z x -y -bso0 -bsp0 "-o$env:RUNNER_TEMP" opencv.exe
+      - name: Build
+        run: |
+          cmake -S cpp -B cpp/build -A x64 -DOpenVINO_DIR="$PWD/.venv/Lib/site-packages/openvino/cmake" -DOpenCV_DIR="$env:RUNNER_TEMP/opencv/build"
+          cmake --build cpp/build --config Release
+      - name: Same boxes as Ultralytics
+        run: |
+          $env:PATH = "$PWD\.venv\Lib\site-packages\openvino\libs;$env:RUNNER_TEMP\opencv\build\x64\vc16\bin;$env:PATH"
+          $env:RDD_DETECT = "$PWD\cpp\build\Release\rdd_detect.exe"
+          uv run pytest tests/test_cpp.py
